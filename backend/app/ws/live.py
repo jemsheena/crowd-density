@@ -12,15 +12,18 @@ import redis
 from app.config import settings
 from core.state.redis_state import StreamState, REDIS_AVAILABLE
 from core.postprocess.heatmap import density_to_heatmap_image
+from core.utils.logger import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 # Try to connect to Redis, but make it optional
 try:
     redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     redis_client.ping()
+    logger.info("Redis connected for WebSocket pub/sub")
 except Exception as e:
-    print(f"Warning: Redis not available for WebSocket: {e}")
+    logger.warning(f"Redis not available for WebSocket: {e}. Using fallback mode.")
     redis_client = None
 
 # Active WebSocket connections
@@ -39,13 +42,16 @@ class ConnectionManager:
         if stream_id not in self.connections:
             self.connections[stream_id] = set()
         self.connections[stream_id].add(websocket)
+        logger.info(f"WebSocket connected for stream {stream_id} (total: {len(self.connections[stream_id])})")
     
     def disconnect(self, stream_id: str, websocket: WebSocket):
         """Disconnect a WebSocket client."""
         if stream_id in self.connections:
             self.connections[stream_id].discard(websocket)
+            logger.info(f"WebSocket disconnected for stream {stream_id} (remaining: {len(self.connections[stream_id])})")
             if not self.connections[stream_id]:
                 del self.connections[stream_id]
+                logger.debug(f"Removed stream {stream_id} from connections")
     
     async def broadcast(self, stream_id: str, message: dict):
         """Broadcast message to all clients for a stream."""
@@ -102,15 +108,20 @@ def density_map_to_heatmap_image(density_map: np.ndarray, colormap: str = "JET",
 @router.websocket("/streams/{stream_id}/live")
 async def websocket_live(websocket: WebSocket, stream_id: str):
     """WebSocket endpoint for live stream updates."""
+    logger.info(f"WebSocket connection request for stream {stream_id}")
     await manager.connect(stream_id, websocket)
     
+    pubsub = None
     try:
         # Subscribe to Redis pub/sub if available
-        pubsub = None
         if redis_client:
             channel = f"{settings.REDIS_STREAM_PREFIX}:{stream_id}:live"
+            logger.debug(f"Subscribing to Redis channel: {channel}")
             pubsub = redis_client.pubsub()
             pubsub.subscribe(channel)
+            logger.info(f"Subscribed to Redis pub/sub for stream {stream_id}")
+        else:
+            logger.warning(f"Redis not available, using fallback mode for stream {stream_id}")
         
         # Also try to get latest stats
         stats = StreamState.get_stats(stream_id)
@@ -125,8 +136,10 @@ async def websocket_live(websocket: WebSocket, stream_id: str):
                 "heatmap": None,
             }
             await websocket.send_json(message)
+            logger.debug(f"Sent initial stats to WebSocket for stream {stream_id}")
         
         # Listen for updates
+        message_count = 0
         while True:
             if pubsub:
                 message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -134,8 +147,11 @@ async def websocket_live(websocket: WebSocket, stream_id: str):
                     try:
                         data = json.loads(message["data"])
                         await websocket.send_json(data)
+                        message_count += 1
+                        if message_count % 30 == 0:
+                            logger.debug(f"Sent {message_count} messages to WebSocket for stream {stream_id}")
                     except Exception as e:
-                        print(f"Error sending WebSocket message: {e}")
+                        logger.error(f"Error sending WebSocket message for stream {stream_id}: {e}", exc_info=True)
             else:
                 # Fallback: send placeholder data if Redis not available
                 message = {
@@ -154,14 +170,15 @@ async def websocket_live(websocket: WebSocket, stream_id: str):
             await asyncio.sleep(0.01)
     
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for stream {stream_id}")
         if pubsub:
             pubsub.close()
         manager.disconnect(stream_id, websocket)
     except Exception as e:
+        logger.error(f"WebSocket error for stream {stream_id}: {e}", exc_info=True)
         if pubsub:
             pubsub.close()
         manager.disconnect(stream_id, websocket)
-        print(f"WebSocket error: {e}")
 
 
 async def publish_stream_update(stream_id: str, stats: dict, density_map: np.ndarray = None):

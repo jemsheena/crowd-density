@@ -1,9 +1,28 @@
 """YOLO detector wrapper."""
+import os
+import torch
+
+# Patch torch.load for PyTorch 2.6+ compatibility with Ultralytics
+# PyTorch 2.6 changed default weights_only to True, but Ultralytics models need False
+_original_torch_load = torch.load
+
+def _patched_torch_load(*args, **kwargs):
+    """Patched torch.load that sets weights_only=False for compatibility."""
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+
+# Apply patch
+torch.load = _patched_torch_load
+
 from ultralytics import YOLO
 import numpy as np
 import cv2
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
+from core.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -29,9 +48,15 @@ class YoloDetector:
             conf_threshold: Confidence threshold
             img_size: Input image size (long side)
         """
-        self.conf_threshold = conf_threshold
-        self.img_size = img_size
-        self.model = YOLO(model_path)
+        logger.info(f"Initializing YOLO detector: model={model_path}, conf={conf_threshold}, img_size={img_size}")
+        try:
+            self.conf_threshold = conf_threshold
+            self.img_size = img_size
+            self.model = YOLO(model_path)
+            logger.info(f"YOLO detector loaded successfully: {model_path}")
+        except Exception as e:
+            logger.error(f"Failed to load YOLO model {model_path}: {e}", exc_info=True)
+            raise
         self.model.fuse()  # Fuse model for faster inference
     
     def infer(self, image: np.ndarray) -> List[Box]:
@@ -44,32 +69,37 @@ class YoloDetector:
         Returns:
             List of detected boxes (person class only)
         """
-        # Run inference
-        results = self.model(image, conf=self.conf_threshold, imgsz=self.img_size, verbose=False)
-        
-        boxes = []
-        if results and len(results) > 0:
-            result = results[0]
-            boxes_tensor = result.boxes
+        try:
+            # Run inference
+            results = self.model(image, conf=self.conf_threshold, imgsz=self.img_size, verbose=False)
             
-            for i in range(len(boxes_tensor)):
-                # Get box coordinates
-                box = boxes_tensor.xyxy[i].cpu().numpy()
-                conf = float(boxes_tensor.conf[i].cpu().numpy())
-                cls = int(boxes_tensor.cls[i].cpu().numpy())
+            boxes = []
+            if results and len(results) > 0:
+                result = results[0]
+                boxes_tensor = result.boxes
                 
-                # Only return person class (class 0)
-                if cls == 0:
-                    boxes.append(Box(
-                        x1=float(box[0]),
-                        y1=float(box[1]),
-                        x2=float(box[2]),
-                        y2=float(box[3]),
-                        conf=conf,
-                        cls=cls
-                    ))
-        
-        return boxes
+                for i in range(len(boxes_tensor)):
+                    # Get box coordinates
+                    box = boxes_tensor.xyxy[i].cpu().numpy()
+                    conf = float(boxes_tensor.conf[i].cpu().numpy())
+                    cls = int(boxes_tensor.cls[i].cpu().numpy())
+                    
+                    # Only return person class (class 0)
+                    if cls == 0:
+                        boxes.append(Box(
+                            x1=float(box[0]),
+                            y1=float(box[1]),
+                            x2=float(box[2]),
+                            y2=float(box[3]),
+                            conf=conf,
+                            cls=cls
+                        ))
+            
+            logger.debug(f"YOLO detected {len(boxes)} persons")
+            return boxes
+        except Exception as e:
+            logger.error(f"YOLO inference error: {e}", exc_info=True)
+            return []
     
     def boxes_to_heatmap(self, image_shape: Tuple[int, int], boxes: List[Box]) -> np.ndarray:
         """

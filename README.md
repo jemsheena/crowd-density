@@ -1,201 +1,184 @@
-# Crowd Density Estimation System
+# Crowd Density Estimation
 
-An AI-based software that watches video feeds and tells you how crowded each area is — showing real-time heatmaps, counts, and alerts for safer crowd management.
+Real-time video analysis system that counts people and generates density heatmaps from video streams. Supports RTSP cameras, video files, and webcams.
 
-## 🏗️ Architecture
+## What It Does
 
-```
-Frontend (React/Tailwind) ←→ WebSocket/REST ←→ FastAPI Gateway
-                                              ↓
-                         Ingestion ←→ Orchestrator ←→ Models (YOLO/CSRNet)
-                                              ↓
-                         Redis (State) ←→ Prometheus (Metrics)
-```
+- Counts people in real-time from video feeds
+- Generates density heatmaps overlaid on video
+- Supports multiple video sources (RTSP, files, webcams)
+- Zone-based counting with threshold alerts
+- WebSocket-based live updates
+- Hybrid model selection (YOLO for sparse, CSRNet for dense crowds)
 
-## 📦 Repository Structure
+## Tech Stack
 
-```
-crowd-density/
-├── frontend/                 # React + Vite + Tailwind
-│   ├── src/
-│   │   ├── components/      # StreamCard, HeatmapCanvas, ZoneEditor, AlertBanner
-│   │   ├── pages/           # Dashboard, StreamDetail, Settings, Auth
-│   │   ├── store/           # Zustand state management
-│   │   └── api/             # REST + WebSocket clients
-├── backend/
-│   ├── app/                 # FastAPI gateway
-│   │   ├── main.py          # App factory
-│   │   ├── routes/          # API routes
-│   │   ├── dto/             # Pydantic models
-│   │   ├── ws/              # WebSocket endpoints
-│   │   └── config.py        # Settings
-│   ├── core/
-│   │   ├── ingestion/       # RTSP/file/webcam readers
-│   │   ├── models/          # YOLO + CSRNet wrappers
-│   │   ├── orchestrator/    # Hybrid selector + pipeline
-│   │   ├── postprocess/     # Smoothing + zones
-│   │   └── metrics/          # Prometheus instrumentation
-│   └── docker/              # Dockerfiles
-└── deploy/
-    └── docker-compose.dev.yml
-```
+**Backend:**
+- FastAPI (Python)
+- PyTorch, YOLOv8, CSRNet
+- Redis (state management, pub/sub)
+- OpenCV (video processing)
 
-## 🚀 Quick Start
+**Frontend:**
+- React + Vite
+- Tailwind CSS
+- Zustand (state)
+- WebSocket client
+
+## Getting Started
 
 ### Prerequisites
 
-- Python 3.11+ (or 3.13)
+- Python 3.11+ (3.13 works)
 - Node.js 18+
-- Redis (optional but recommended - see setup options below)
-- Docker (optional - only needed for easy Redis setup)
+- Redis (optional but recommended)
 
-### Backend Setup
+### Backend
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Copy environment file
-cp .env.example .env
-
-# Optional: Start Redis (recommended for full functionality)
-# Option 1: Docker
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Option 2: Windows Redis (download from GitHub releases)
-# Option 3: Skip Redis (limited functionality - backend will start with warnings)
-
-# Run server
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload
 ```
 
-**Note:** Redis is optional but recommended. The backend will start without it but with limited functionality. See `SETUP_OPTIONS.md` for detailed setup instructions.
+Backend runs on `http://localhost:8000`. API docs at `/docs`.
 
-### Frontend Setup
+### Frontend
 
 ```bash
 cd frontend
 npm install
-
-# Copy environment file
-cp .env.example .env
-
-# Run dev server
 npm run dev
 ```
 
-### Docker Setup
+Frontend runs on `http://localhost:5173`.
+
+### Redis (Recommended)
+
+For full functionality, start Redis:
+
+**With Docker:**
+```bash
+docker run -d -p 6379:6379 --name redis redis:7-alpine
+```
+
+**Without Docker:**
+- Windows: Install [Memurai](https://www.memurai.com/get-memurai) (free)
+- Or use native Redis from [tporadowski/redis](https://github.com/tporadowski/redis/releases)
+
+The backend works without Redis but with limited functionality (no real-time updates, no state persistence).
+
+## Configuration
+
+Default settings work out of the box. To customize, create `.env` files:
+
+**Backend** (`backend/.env`):
+```
+REDIS_URL=redis://localhost:6379/0
+MODEL_DIR=./models
+DEBUG=false
+```
+
+**Frontend** (`frontend/.env`):
+```
+VITE_API_URL=http://localhost:8000
+```
+
+See `backend/app/config.py` for all available settings.
+
+## API
+
+### REST Endpoints
+
+- `POST /streams` - Create stream
+- `GET /streams` - List streams
+- `GET /streams/{id}/stats` - Get stats
+- `DELETE /streams/{id}` - Delete stream
+
+### WebSocket
+
+- `WS /ws/streams/{id}/live` - Live updates (10-20 Hz)
+
+See `http://localhost:8000/docs` for full API documentation.
+
+## Models
+
+**YOLOv8n** - Person detection for sparse to medium density. Auto-downloads on first use.
+
+**CSRNet** - Density estimation for high-density crowds. Stub implementation included.
+
+**Hybrid Selector** - Automatically switches between models based on scene complexity (Laplacian variance).
+
+## Project Structure
+
+```
+backend/
+  app/              # FastAPI app, routes, services
+  core/
+    ingestion/      # RTSP/file/webcam readers
+    models/         # YOLO and CSRNet wrappers
+    orchestrator/   # Hybrid selector, pipeline
+    postprocess/    # Smoothing, zones, heatmaps
+    state/          # Redis state management
+
+frontend/
+  src/
+    components/     # React components
+    pages/          # Route pages
+    store/          # Zustand stores
+    api/            # API client
+```
+
+## Development
+
+### Adding a Video Source
+
+1. Create reader in `backend/core/ingestion/`
+2. Implement async `frames()` generator
+3. Register in `backend/app/services/stream_service.py`
+
+### Adding a Model
+
+1. Create wrapper in `backend/core/models/`
+2. Implement `infer(image)` method returning count/density map
+3. Register in `backend/core/orchestrator/pipeline.py`
+
+### Logging
+
+Logs written to `backend/logs/crowd-density-YYYYMMDD.log` and console. See `backend/LOGGING.md` for details.
+
+## Docker
 
 ```bash
-# From project root
 cd deploy
 docker-compose -f docker-compose.dev.yml up
 ```
 
-## 📡 API Endpoints
+Starts Redis, MinIO, Prometheus, and Grafana. Backend and frontend still run locally.
 
-### REST API
+## Troubleshooting
 
-- `POST /streams` - Create a new stream
-- `GET /streams` - List all streams
-- `GET /streams/{id}/stats` - Get stream statistics
-- `POST /infer` - Run inference on uploaded image
-- `GET /metrics` - Prometheus metrics
+**Backend won't start:**
+- Check Python version: `python --version`
+- Verify dependencies: `pip install -r requirements.txt`
+- Check port 8000 isn't in use
 
-### WebSocket
+**Redis connection errors:**
+- Verify Redis is running: `redis-cli ping` (or `python -c "import redis; r=redis.from_url('redis://localhost:6379/0'); print(r.ping())"`)
+- Check `REDIS_URL` in `.env`
+- Backend works without Redis (with warnings)
 
-- `WS /ws/streams/{id}/live` - Live stream updates (10-20 Hz)
+**No video frames:**
+- Check video file path is correct
+- Verify RTSP URL is accessible
+- Check webcam device index (usually 0)
+- See logs in `backend/logs/` for errors
 
-## 🔧 Configuration
+**Model loading errors:**
+- YOLOv8 auto-downloads, CSRNet needs weights
+- Check `MODEL_DIR` path exists
+- PyTorch 2.6+ requires compatible model weights
 
-See `backend/.env.example` and `frontend/.env.example` for configuration options.
-
-Key settings:
-- `AUTH_DISABLED=true` - Disable auth for development
-- `REDIS_URL` - Redis connection string
-- `S3_ENDPOINT_URL` - S3/MinIO endpoint
-- `MODEL_DIR` - Path to model weights
-
-## 🧠 Models
-
-### YOLOv8
-- Detector for sparse-medium density scenes
-- Provides bounding boxes for ROI analysis
-- Auto-downloads weights on first use
-
-### CSRNet
-- Density estimation for high-density scenes
-- Outputs density maps (sum ≈ count)
-- Requires trained weights (stub included)
-
-### Hybrid Selector
-- Automatically chooses model based on scene characteristics
-- Uses Laplacian variance as scene complexity metric
-- Hysteresis prevents frequent toggling
-
-## 📊 Features
-
-- ✅ Real-time crowd counting
-- ✅ Heatmap visualization
-- ✅ Zone-based counting and alerts
-- ✅ Temporal smoothing (EMA)
-- ✅ WebSocket live updates
-- ✅ Prometheus metrics
-- ✅ REST API
-- ✅ Docker support
-
-## 🧪 Testing
-
-```bash
-# Backend tests (to be implemented)
-cd backend
-pytest
-
-# Frontend tests (to be implemented)
-cd frontend
-npm test
-```
-
-## 📈 Monitoring
-
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (admin/admin)
-- API Docs: http://localhost:8000/docs
-
-## 🔒 Security
-
-- JWT authentication (configurable)
-- CORS protection
-- Rate limiting
-- Input validation
-
-## 📝 Development
-
-### Adding a New Stream Source
-
-1. Create reader in `backend/core/ingestion/`
-2. Implement async `frames()` iterator
-3. Register in stream service
-
-### Adding a New Model
-
-1. Create wrapper in `backend/core/models/`
-2. Implement `infer(image)` method
-3. Register in orchestrator
-
-## 🚧 TODO
-
-- [ ] Implement full CSRNet architecture and training
-- [ ] Add Redis pub/sub for WebSocket
-- [ ] Add database persistence (PostgreSQL)
-- [ ] Add authentication endpoints
-- [ ] Add unit tests
-- [ ] Add E2E tests
-- [ ] Add model registry
-- [ ] Add training pipeline
-
-## 📄 License
+## License
 
 MIT

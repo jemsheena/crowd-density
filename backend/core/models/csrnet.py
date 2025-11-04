@@ -5,6 +5,9 @@ import numpy as np
 import cv2
 from typing import Tuple, Optional
 from pathlib import Path
+from core.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class CSRNet(nn.Module):
@@ -50,6 +53,10 @@ class CSRNetInference:
         
         self.model.to(self.device)
         self.model.eval()
+        
+        # Ensure model is in float32 mode
+        self.model = self.model.float()
+        logger.info(f"CSRNet model initialized on {self.device}, dtype=float32")
     
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
@@ -73,12 +80,14 @@ class CSRNetInference:
         
         # Normalize
         rgb = rgb.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         rgb = (rgb - mean) / std
         
         # Convert to tensor and add batch dimension
+        # Explicitly set dtype to float32 to match model weights
         tensor = torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0)
+        tensor = tensor.to(dtype=torch.float32)  # Ensure float32, not float64 (double)
         return tensor.to(self.device)
     
     def postprocess(self, density_map: torch.Tensor, original_shape: Tuple[int, int]) -> np.ndarray:
@@ -118,6 +127,11 @@ class CSRNetInference:
         
         # Preprocess
         input_tensor = self.preprocess(image)
+        
+        # Verify dtype
+        if input_tensor.dtype != torch.float32:
+            logger.warning(f"Input tensor dtype is {input_tensor.dtype}, converting to float32")
+            input_tensor = input_tensor.float()
         
         # Inference
         with torch.no_grad():
