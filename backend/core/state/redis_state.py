@@ -61,7 +61,7 @@ class StreamState:
         return None
     
     @staticmethod
-    def publish_update(stream_id: str, stats: Dict[str, Any], heatmap_data: str = None):
+    def publish_update(stream_id: str, stats: Dict[str, Any], heatmap_data: str = None, frame_data: str = None):
         """Publish stats update to Redis pub/sub."""
         if not REDIS_AVAILABLE or not redis_client:
             logger.debug(f"Redis not available, skipping pub/sub for stream {stream_id}")
@@ -90,6 +90,8 @@ class StreamState:
                 "fps": stats.get("fps", 0.0),
                 "model": stats.get("model_used", "unknown"),
                 "heatmap": heatmap_data,
+                "frame": frame_data,  # Base64-encoded frame
+                "frame_url": frame_data,  # Alias for frontend compatibility
             }
             redis_client.publish(channel, json.dumps(stats_copy))
             logger.debug(f"Published stats update to Redis channel {channel} for stream {stream_id}")

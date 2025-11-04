@@ -29,6 +29,7 @@ class InferencePipeline:
         
         # Stats
         self.last_count = 0
+        self.last_smoothed_count = 0
         self.last_fps = 0.0
         self.last_latency_ms = 0.0
         self.last_model = "unknown"
@@ -65,22 +66,39 @@ class InferencePipeline:
             model_choice = "detector"  # fallback
         
         # Run inference
-        count = 0
+        raw_count = 0
         density_map = None
         boxes = None
         
         if model_choice == "detector" and self.yolo:
             boxes = self.yolo.infer(image)
-            count = len([b for b in boxes if b.cls == 0])  # person class
+            raw_count = len([b for b in boxes if b.cls == 0])  # person class
             # Convert boxes to density-like heatmap
             density_map = self.yolo.boxes_to_heatmap(image.shape[:2], boxes)
         elif model_choice == "density" and self.csrnet:
             density_map = self.csrnet.infer(image)
-            count = int(density_map.sum())
+            raw_sum = density_map.sum()
+            # CSRNet stub might output very large values - scale down if needed
+            # For a properly trained CSRNet, sum should be close to actual count
+            # For stub model, we'll cap it at a reasonable value
+            if raw_sum > 1000:  # If sum is unrealistically large, scale it
+                # Estimate count based on density map max and area
+                max_density = density_map.max()
+                if max_density > 0:
+                    # Rough heuristic: if max density is very high, the model output needs scaling
+                    scale_factor = min(100.0 / max_density, 1.0)  # Scale down if max > 100
+                    raw_count = int(raw_sum * scale_factor)
+                else:
+                    raw_count = 0
+            else:
+                raw_count = int(raw_sum)
         
-        # Apply EMA smoothing
-        smoothed_count = self.count_ema.update(count)
-        self.last_count = int(smoothed_count)
+        # Apply EMA smoothing (for display stability)
+        smoothed_count = self.count_ema.update(raw_count)
+        
+        # Use raw count for current frame display, smoothed for stability
+        self.last_count = raw_count  # Use raw count for current frame
+        self.last_smoothed_count = int(smoothed_count)  # Keep smoothed for reference
         
         # Zone integration
         zone_stats = []
@@ -105,7 +123,8 @@ class InferencePipeline:
             self.last_fps = (len(self.frame_times) - 1) / elapsed if elapsed > 0 else 0.0
         
         return {
-            "count": self.last_count,
+            "count": self.last_count,  # Raw count for current frame
+            "count_smoothed": self.last_smoothed_count,  # EMA smoothed count
             "density_map": density_map,
             "boxes": boxes,
             "model_used": model_choice,

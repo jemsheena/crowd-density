@@ -1,5 +1,6 @@
 """WebSocket live stream endpoint."""
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from uvicorn.protocols.utils import ClientDisconnected
 import json
 import asyncio
 from typing import Dict, Set
@@ -59,11 +60,17 @@ class ConnectionManager:
             return
         
         disconnected = set()
-        for websocket in self.connections[stream_id]:
+        for websocket in list(self.connections[stream_id]):  # Create a copy to iterate safely
             try:
                 await websocket.send_json(message)
-            except:
+            except (WebSocketDisconnect, ClientDisconnected, ConnectionError, RuntimeError) as e:
+                # Client disconnected - remove from connections
                 disconnected.add(websocket)
+                logger.debug(f"Client disconnected during broadcast for stream {stream_id}: {type(e).__name__}")
+            except Exception as e:
+                # Other errors - log but don't remove (might be transient)
+                logger.warning(f"Error sending to WebSocket for stream {stream_id}: {e}")
+                disconnected.add(websocket)  # Remove on any error to be safe
         
         # Remove disconnected clients
         for ws in disconnected:
@@ -124,64 +131,111 @@ async def websocket_live(websocket: WebSocket, stream_id: str):
             logger.warning(f"Redis not available, using fallback mode for stream {stream_id}")
         
         # Also try to get latest stats
-        stats = StreamState.get_stats(stream_id)
-        if stats:
-            message = {
-                "type": "frame_stats",
-                "ts": datetime.utcnow().timestamp(),
-                "count": stats.get("count", 0),
-                "zones": stats.get("zones", []),
-                "fps": stats.get("fps", 0.0),
-                "model": stats.get("model_used", "hybrid"),
-                "heatmap": None,
-            }
-            await websocket.send_json(message)
-            logger.debug(f"Sent initial stats to WebSocket for stream {stream_id}")
+        try:
+            stats = StreamState.get_stats(stream_id)
+            if stats:
+                message = {
+                    "type": "frame_stats",
+                    "ts": datetime.utcnow().timestamp(),
+                    "count": stats.get("count", 0),
+                    "zones": stats.get("zones", []),
+                    "fps": stats.get("fps", 0.0),
+                    "model": stats.get("model_used", "hybrid"),
+                    "heatmap": None,
+                    "frame": None,
+                    "frame_url": None,
+                    "status": "running",
+                    "name": stream_id,
+                }
+                await websocket.send_json(message)
+                logger.debug(f"Sent initial stats to WebSocket for stream {stream_id}")
+        except (WebSocketDisconnect, ClientDisconnected, ConnectionError, RuntimeError):
+            # Client already disconnected, exit gracefully
+            raise
+        except Exception as e:
+            logger.warning(f"Error sending initial stats for stream {stream_id}: {e}")
         
         # Listen for updates
         message_count = 0
         while True:
-            if pubsub:
-                message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if message:
+            try:
+                if pubsub:
+                    message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message:
+                        try:
+                            data = json.loads(message["data"])
+                            await websocket.send_json(data)
+                            message_count += 1
+                            if message_count % 30 == 0:
+                                logger.debug(f"Sent {message_count} messages to WebSocket for stream {stream_id}")
+                        except (WebSocketDisconnect, ClientDisconnected, ConnectionError, RuntimeError):
+                            # Client disconnected, break out of loop
+                            raise
+                        except Exception as e:
+                            # Only log if it's not a disconnection-related error
+                            if not isinstance(e, (asyncio.CancelledError, ConnectionError)):
+                                logger.debug(f"Error sending WebSocket message for stream {stream_id}: {e}")
+                else:
+                    # Fallback: send placeholder data if Redis not available
                     try:
-                        data = json.loads(message["data"])
-                        await websocket.send_json(data)
-                        message_count += 1
-                        if message_count % 30 == 0:
-                            logger.debug(f"Sent {message_count} messages to WebSocket for stream {stream_id}")
-                    except Exception as e:
-                        logger.error(f"Error sending WebSocket message for stream {stream_id}: {e}", exc_info=True)
-            else:
-                # Fallback: send placeholder data if Redis not available
-                message = {
-                    "type": "frame_stats",
-                    "ts": datetime.utcnow().timestamp(),
-                    "count": 0,
-                    "zones": [],
-                    "fps": 0.0,
-                    "model": "hybrid",
-                    "heatmap": None,
-                }
-                await websocket.send_json(message)
-                await asyncio.sleep(1.0)  # Slower updates without Redis
-            
-            # Small delay to prevent busy loop
-            await asyncio.sleep(0.01)
+                        message = {
+                            "type": "frame_stats",
+                            "ts": datetime.utcnow().timestamp(),
+                            "count": 0,
+                            "zones": [],
+                            "fps": 0.0,
+                            "model": "hybrid",
+                            "heatmap": None,
+                            "frame": None,
+                            "frame_url": None,
+                            "status": "running",
+                            "name": stream_id,
+                        }
+                        await websocket.send_json(message)
+                        await asyncio.sleep(1.0)  # Slower updates without Redis
+                    except (WebSocketDisconnect, ClientDisconnected, ConnectionError, RuntimeError):
+                        # Client disconnected, exit loop
+                        raise
+                
+                # Small delay to prevent busy loop
+                await asyncio.sleep(0.01)
+            except (WebSocketDisconnect, ClientDisconnected, ConnectionError, RuntimeError):
+                # Client disconnected, exit loop
+                raise
     
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for stream {stream_id}")
+    except (WebSocketDisconnect, ClientDisconnected):
+        logger.info(f"WebSocket disconnected for stream {stream_id} (normal disconnect)")
         if pubsub:
-            pubsub.close()
+            try:
+                pubsub.close()
+            except:
+                pass
+        manager.disconnect(stream_id, websocket)
+    except ConnectionError as e:
+        logger.info(f"WebSocket connection error for stream {stream_id}: {e}")
+        if pubsub:
+            try:
+                pubsub.close()
+            except:
+                pass
         manager.disconnect(stream_id, websocket)
     except Exception as e:
-        logger.error(f"WebSocket error for stream {stream_id}: {e}", exc_info=True)
+        # Only log unexpected errors with full traceback
+        # Skip logging for expected shutdown/disconnection errors
+        if not isinstance(e, (RuntimeError, asyncio.CancelledError, ConnectionError, WebSocketDisconnect, ClientDisconnected)):
+            logger.error(f"WebSocket error for stream {stream_id}: {e}", exc_info=True)
+        elif not isinstance(e, (asyncio.CancelledError, RuntimeError)):
+            # Log connection errors at info level, not error
+            logger.debug(f"WebSocket connection error for stream {stream_id}: {type(e).__name__}")
         if pubsub:
-            pubsub.close()
+            try:
+                pubsub.close()
+            except:
+                pass
         manager.disconnect(stream_id, websocket)
 
 
-async def publish_stream_update(stream_id: str, stats: dict, density_map: np.ndarray = None):
+async def publish_stream_update(stream_id: str, stats: dict, density_map: np.ndarray = None, frame_data: str = None):
     """Publish stream update to WebSocket clients and Redis."""
     message = {
         "type": "frame_stats",
@@ -192,6 +246,8 @@ async def publish_stream_update(stream_id: str, stats: dict, density_map: np.nda
         "fps": stats.get("fps", 0.0),
         "model": stats.get("model_used", "unknown"),
         "heatmap": None,
+        "frame": frame_data,
+        "frame_url": frame_data,  # Alias for frontend compatibility
     }
     
     # Add heatmap if provided

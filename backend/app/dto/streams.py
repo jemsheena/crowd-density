@@ -83,6 +83,10 @@ class StreamResponse(BaseModel):
     """Stream creation response."""
     id: str
     status: str = Field(..., description="Stream status: starting, running, stopped, error")
+    name: Optional[str] = Field(None, description="Stream name")
+    count: Optional[int] = Field(None, description="Current count")
+    fps: Optional[float] = Field(None, description="Current FPS")
+    model: Optional[str] = Field(None, description="Current model")
 
 
 class StreamListResponse(BaseModel):

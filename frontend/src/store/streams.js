@@ -14,7 +14,9 @@ const useStreamStore = create((set, get) => ({
       const response = await streamsApi.list()
       set({ streams: response.data.streams || [], loading: false })
     } catch (error) {
-      set({ error: error.message, loading: false })
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to fetch streams'
+      console.error('Error fetching streams:', error)
+      set({ error: errorMessage, loading: false, streams: [] })
     }
   },
 

@@ -167,10 +167,32 @@ class StreamWorker:
                             alpha=0.55
                         )
                     
+                    # Encode frame as base64 (for WebSocket)
+                    import cv2
+                    import base64
+                    frame_data = None
+                    if frame_count % 2 == 0:  # Send every other frame to reduce bandwidth
+                        # Resize frame if too large (max 1920x1080)
+                        h, w = frame.shape[:2]
+                        if w > 1920 or h > 1080:
+                            scale = min(1920 / w, 1080 / h)
+                            new_w, new_h = int(w * scale), int(h * scale)
+                            frame_resized = cv2.resize(frame, (new_w, new_h))
+                        else:
+                            frame_resized = frame
+                        
+                        # Encode frame as JPEG (smaller than PNG)
+                        _, buffer = cv2.imencode('.jpg', frame_resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                        frame_data = f"data:image/jpeg;base64,{frame_base64}"
+                    
                     # Prepare stats
+                    # Use raw count for current frame (not smoothed/cumulative)
+                    current_frame_count = result.get("count", 0)  # Raw count for current frame
                     stats = {
                         "id": self.stream_id,
-                        "count": result["count"],
+                        "count": current_frame_count,  # Current frame count
+                        "count_smoothed": result.get("count_smoothed", current_frame_count),  # EMA smoothed (for reference)
                         "fps": self.pipeline.last_fps,
                         "latency_ms": result["latency_ms"],
                         "zones": [
@@ -196,8 +218,8 @@ class StreamWorker:
                     # Update Redis state
                     StreamState.update_stats(self.stream_id, stats)
                     
-                    # Publish to Redis pub/sub with heatmap (WebSocket will pick it up)
-                    StreamState.publish_update(self.stream_id, stats, heatmap_data)
+                    # Publish to Redis pub/sub with heatmap and frame (WebSocket will pick it up)
+                    StreamState.publish_update(self.stream_id, stats, heatmap_data, frame_data)
                     
                     # Reset error count on success
                     error_count = 0

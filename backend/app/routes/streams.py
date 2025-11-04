@@ -38,7 +38,11 @@ async def create_stream(stream_data: StreamCreate):
         }
         
         logger.info(f"Stream {stream_id} created successfully")
-        return StreamResponse(id=stream_id, status="starting")
+        return StreamResponse(
+            id=stream_id,
+            status="starting",
+            name=stream_data.name,
+        )
     except Exception as e:
         logger.error(f"Failed to create stream: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create stream: {str(e)}")
@@ -90,9 +94,20 @@ async def list_streams():
     logger.debug("GET /streams - Listing all streams")
     streams = []
     for stream_id, stream in _streams_db.items():
-        # Get real status from Redis
+        # Get real status and stats from Redis
         status = StreamState.get_status(stream_id) or stream.get("status", "unknown")
-        streams.append(StreamResponse(id=stream_id, status=status))
+        stats = StreamState.get_stats(stream_id)
+        
+        # Build response with all available data
+        stream_response = StreamResponse(
+            id=stream_id,
+            status=status,
+            name=stream.get("name", stream_id),
+            count=stats.get("count") if stats else None,
+            fps=stats.get("fps") if stats else None,
+            model=stats.get("model_used") if stats else None,
+        )
+        streams.append(stream_response)
     
     logger.debug(f"Found {len(streams)} streams")
     return StreamListResponse(streams=streams, total=len(streams))

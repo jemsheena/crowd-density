@@ -52,7 +52,7 @@ export const wsLive = (id, onMessage) => {
   }
 
   ws.onerror = (error) => {
-    console.error('WebSocket error:', error)
+    console.error('WebSocket error:', error.message || 'Connection error')
   }
 
   ws.onclose = () => {
@@ -99,7 +99,7 @@ export class WebSocketClient {
     }
 
     this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
+      console.error('WebSocket error:', error.message || 'Connection error')
       if (this.onError) {
         this.onError(error)
       }
